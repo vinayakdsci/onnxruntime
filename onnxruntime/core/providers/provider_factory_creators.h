@@ -101,3 +101,7 @@
 #if defined(USE_AZURE)
 #include "core/providers/azure/azure_provider_factory_creator.h"
 #endif
+
+#if defined(USE_IREE)
+#include "core/providers/iree/iree_provider_factory_creator.h"
+#endif

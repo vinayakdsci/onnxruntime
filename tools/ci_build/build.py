@@ -663,6 +663,9 @@ def parse_arguments():
     parser.add_argument("--armnn_libs", help="Path to ArmNN libraries")
     parser.add_argument("--build_micro_benchmarks", action="store_true", help="Build ONNXRuntime micro-benchmarks.")
 
+    # IREE related.
+    parser.add_argument("--use_iree", action="store_true", help="Enable IREE-based Execution Provider.")
+
     # options to reduce binary size
     parser.add_argument(
         "--minimal_build",
@@ -1092,6 +1095,8 @@ def generate_build_tree(
         "-Donnxruntime_DISABLE_FLOAT8_TYPES=" + ("ON" if disable_float8_types else "OFF"),
         "-Donnxruntime_DISABLE_SPARSE_TENSORS=" + ("ON" if disable_sparse_tensors else "OFF"),
         "-Donnxruntime_DISABLE_OPTIONAL_TYPE=" + ("ON" if disable_optional_type else "OFF"),
+        # IREE related.
+        "-Donnxruntime_USE_IREE=" + ("ON" if args.use_iree else "OFF"),
     ]
 
     if args.rv64:
