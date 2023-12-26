@@ -203,3 +203,8 @@ endif()
 if (onnxruntime_USE_AZURE)
   include(onnxruntime_providers_azure.cmake)
 endif()
+
+if(onnxruntime_USE_IREE)
+  include(onnxruntime_providers_iree.cmake)
+  set(PROVIDERS_IREE onnxruntime_providers_iree)
+endif()
