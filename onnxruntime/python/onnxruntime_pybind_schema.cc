@@ -52,6 +52,9 @@ void addGlobalSchemaFunctions(pybind11::module& m) {
 #ifdef USE_VITISAI
             onnxruntime::VitisAIProviderFactoryCreator::Create(ProviderOptions{}),
 #endif
+#ifdef USE_IREE
+            onnxruntime::IREEProviderFactoryCreator::Create(ProviderOptions{}),
+#endif
 #ifdef USE_ACL
             onnxruntime::ACLProviderFactoryCreator::Create(0),
 #endif

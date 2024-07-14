@@ -963,6 +963,16 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     return onnxruntime::VitisAIProviderFactoryCreator::Create(vitis_option_map)
         ->CreateProvider();
 #endif
+  } else if (type == kIreeExecutionProvider) {
+#if USE_IREE
+    const auto &it = provider_options_map.find(type);
+    ProviderOptions iree_option_map = ProviderOptions{};
+    if (it != provider_options_map.end()) {
+      iree_option_map = it->second;
+    }
+    return onnxruntime::IREEProviderFactoryCreator::Create(iree_option_map)
+        ->CreateProvider();
+#endif
   } else if (type == kAclExecutionProvider) {
 #ifdef USE_ACL
     return onnxruntime::ACLProviderFactoryCreator::Create(

@@ -544,7 +544,7 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
 #else
     ORT_THROW("VitisAI is not supported in this build\n");
 #endif
-  } else if (!provider_name.empty() && provider_name != onnxruntime::kCpuExecutionProvider) {
+  } else if (!provider_name.empty() && provider_name != onnxruntime::kCpuExecutionProvider && provider_name != onnxruntime::kIreeExecutionProvider) {
     ORT_THROW("This backend is not included in perf test runner.\n");
   }
 
