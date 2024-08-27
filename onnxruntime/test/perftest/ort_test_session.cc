@@ -544,7 +544,9 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
 #else
     ORT_THROW("VitisAI is not supported in this build\n");
 #endif
-  } else if (!provider_name.empty() && provider_name != onnxruntime::kCpuExecutionProvider) {
+    // TODO: We need to register the IREE EP here just as the other EPs have done, and not just use a check like this.
+    // Once the EP is functional, this check should be removed from here, and a complete implementation should be added above.
+  } else if (!provider_name.empty() && provider_name != onnxruntime::kCpuExecutionProvider && provider_name != onnxruntime::kIreeExecutionProvider) {
     ORT_THROW("This backend is not included in perf test runner.\n");
   }
 
