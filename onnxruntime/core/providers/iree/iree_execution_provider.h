@@ -11,6 +11,7 @@
 
 #include "core/framework/execution_provider.h"
 
+#include "core/framework/provider_options.h"
 #include "core/providers/iree/iree_ep_runtime.h"
 
 namespace onnxruntime {

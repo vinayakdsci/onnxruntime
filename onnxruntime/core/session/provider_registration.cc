@@ -157,7 +157,7 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
 #endif
   } else if (strcmp(provider_name, "IREE") == 0) {
 #if defined(USE_IREE)
-    options->provider_factories.push_back(IREEProviderFactoryCreator::Create(provider_options_keys));
+    options->provider_factories.push_back(IREEProviderFactoryCreator::Create(provider_options));
 #else
     status = create_not_supported_status();
 #endif

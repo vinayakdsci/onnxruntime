@@ -582,7 +582,8 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
 #endif
   } else if (!provider_name_.empty() &&
              provider_name_ != onnxruntime::kCpuExecutionProvider &&
-             provider_name_ != onnxruntime::kOpenVINOExecutionProvider) {
+             provider_name_ != onnxruntime::kOpenVINOExecutionProvider &&
+             provider_name_ != onnxruntime::kIreeExecutionProvider) {
     ORT_THROW("This backend is not included in perf test runner.\n");
   }
 

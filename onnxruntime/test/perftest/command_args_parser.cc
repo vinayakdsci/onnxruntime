@@ -280,6 +280,8 @@ static bool ParseSessionConfigs(const std::string& configs_string,
           test_config.machine_config.provider_type_name = onnxruntime::kXnnpackExecutionProvider;
         } else if (!CompareCString(optarg, ORT_TSTR("vitisai"))) {
           test_config.machine_config.provider_type_name = onnxruntime::kVitisAIExecutionProvider;
+        } else if (!CompareCString(optarg, ORT_TSTR("iree"))) {
+          test_config.machine_config.provider_type_name = onnxruntime::kIreeExecutionProvider;
         } else {
           return false;
         }
