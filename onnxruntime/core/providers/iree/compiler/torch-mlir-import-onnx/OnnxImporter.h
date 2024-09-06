@@ -17,6 +17,7 @@
 // for class members/accessors because canonical protobuf coding presumes
 // this kind of style.
 
+#include "core/graph/graph_viewer.h"
 #include "mlir-c/IR.h"
 #include "onnx/onnx_pb.h"
 
@@ -64,8 +65,8 @@ static inline bool failed(Status status) { return !status.is_success(); }
 // Accounting for a GraphProto.
 class GraphInfo {
 public:
-  GraphInfo(ModelInfo &model_info, const onnx::GraphProto &graph_proto)
-      : model_info_(model_info), graph_proto_(graph_proto) {}
+  GraphInfo(const onnxruntime::GraphViewer &gv, ModelInfo &model_info, const onnx::GraphProto &graph_proto)
+      : graph_viewer_(gv), model_info_(model_info), graph_proto_(graph_proto) {}
   ModelInfo &model_info() { return model_info_; }
   const onnx::GraphProto &graph_proto() { return graph_proto_; }
 
@@ -101,12 +102,15 @@ public:
     return output_map_;
   }
 
+  const onnxruntime::GraphViewer &graph_viewer() { return graph_viewer_; }
+
   std::unordered_map<std::string_view, const onnx::TensorProto &> &
   initializer_map() {
     return initializer_map_;
   }
 
 private:
+  const onnxruntime::GraphViewer &graph_viewer_;
   ModelInfo &model_info_;
   const onnx::GraphProto &graph_proto_;
 
@@ -131,7 +135,7 @@ public:
   onnx::ModelProto &model_proto() { return model_proto_; }
 
   /// Post-construction, failable initialization.
-  Status Initialize();
+  Status Initialize(const onnxruntime::GraphViewer &gv);
 
   GraphInfo &main_graph() { return *main_graph_; }
   const std::string &error_message() { return error_message_; }
@@ -157,6 +161,7 @@ public:
       : model_info_(model_info), context_(context) {}
 
   MlirContext context() { return context_; }
+  MlirType GetNoneType();
 
   /// Converts the TypeProto to an MlirType, returning a null type and
   /// setting an error if not possible.
@@ -208,6 +213,8 @@ public:
   /// Imports all nodes topologically. Internally calls FinalizeGraph.
   Status ImportAll();
 
+  /// Substitutes !torch.none in place of `''` labelled inputs.
+  void ImportNoneNode();
   /// Import nodes one at a time. Must complete with a call to FinalizeGraph.
   Status ImportNode(const onnx::NodeProto &node);
   Status FinalizeGraph();
