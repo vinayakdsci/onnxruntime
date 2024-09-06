@@ -7,11 +7,9 @@
 #include "core/framework/compute_capability.h"
 #include "core/framework/fallback_cpu_capability.h"
 #include "core/framework/kernel_registry.h"
-#include "core/graph/graph_proto_serializer.h"
 #include "core/graph/graph_utils.h"
 #include "core/graph/graph_viewer.h"
 
-#include "core/graph/model.h"
 #include "core/providers/iree/compiler/jit_compiler.h"
 
 #include <cassert>
@@ -124,18 +122,8 @@ common::Status IREEExecutionProvider::Compile(const std::vector<FusedNodeAndGrap
   for (auto& fused_node_graph : fused_nodes_and_graphs) {
     const GraphViewer& graph_view = fused_node_graph.filtered_graph;
     const Node& fused_node = fused_node_graph.fused_node;
-    const std::string func_name = fused_node.Name();
-    Model model(graph_view.Name(), true, ModelMetaData(), PathString(),
-                IOnnxRuntimeOpSchemaRegistryList(), graph_view.DomainToVersionMap(),
-                std::vector<ONNX_NAMESPACE::FunctionProto>(), *GetLogger());
-    ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
-
-    GraphViewerToProto(graph_view, *model_proto.mutable_graph(), true, true);
-    auto opset = model_proto.add_opset_import();
-    opset->set_domain(kOnnxDomain);
-    opset->set_version(graph_view.DomainToVersionMap().at(kOnnxDomain));
-
-    ORT_RETURN_IF_ERROR(inv.ImportSubgraph(model_proto, graph_view, func_name));
+    const std::string& func_name = fused_node.Name();
+    ORT_RETURN_IF_ERROR(inv.ImportSubgraph(graph_view, func_name));
     // The fully qualified name is the {module_name}.{func_name}. This is what we look up at
     // runtime.
     std::string fq_name(module_name);

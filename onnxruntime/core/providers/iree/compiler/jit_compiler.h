@@ -81,7 +81,7 @@ struct CompilerInvocation {
   ~CompilerInvocation();
 
   // Imports a subgraph as a public function.
-  common::Status ImportSubgraph(const ONNX_NAMESPACE::ModelProto &model_proto, const onnxruntime::GraphViewer& graph_view, const std::string& func_name);
+  common::Status ImportSubgraph(const onnxruntime::GraphViewer& graph_view, const std::string& func_name);
 
   // Compile and output a VMFB.
   common::Status CompileAndOutputVMFB(iree_compiler_output_t* output);

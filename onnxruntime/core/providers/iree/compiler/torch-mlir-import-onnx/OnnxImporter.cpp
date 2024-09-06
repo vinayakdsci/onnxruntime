@@ -556,8 +556,8 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   std::vector<MlirType> input_types;
   std::vector<MlirLocation> input_locs;
   std::vector<MlirType> output_types;
-  for (auto input : graph_info_.graph_proto().input()) {
-    MlirType t = cc_.ConvertTypeProto(input.type());
+  for (auto input : graph_info_.graph_viewer().GetInputs()) {
+    MlirType t = cc_.ConvertTypeProto(*input->TypeAsProto());
     if (mlirTypeIsNull(t)) {
       return failure();
     }
@@ -588,8 +588,9 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   mlirRegionAppendOwnedBlock(bodyRegion, body_block_);
 
   // Map the block args to names and store for evaluation.
-  for (int i = 0, e = graph_info_.graph_proto().input().size(); i < e; ++i) {
-    std::string_view name = graph_info_.graph_proto().input()[i].name();
+  for (int i = 0, e = graph_info_.graph_viewer().GetInputs().size(); i < e;
+       ++i) {
+    std::string_view name = graph_info_.graph_viewer().GetInputs()[i]->Name();
     MlirValue value = mlirBlockGetArgument(body_block_, i);
     nv_map_[name] = value;
   }
@@ -655,9 +656,19 @@ Status NodeImporter::ImportAll() {
     if (failed(ImportInitializer(it.second)))
       return failure();
   }
-  for (auto it : graph_info_.graph_proto().node()) {
-    if (failed(ImportNode(it)))
-      return failure();
+  ImportNoneNode();
+
+  auto node_indices = graph_info_.graph_viewer().GetNodesInTopologicalOrder();
+  std::vector<ONNX_NAMESPACE::NodeProto> nodes(node_indices.size());
+  for (size_t i = 0; i < node_indices.size(); ++i) {
+    graph_info_.graph_viewer().GetNode(node_indices[i])->ToProto(nodes[i]);
+  }
+
+  for (const auto &node : nodes) {
+    if (torch_mlir_onnx::failed(ImportNode(node))) {
+      return SetError("Failed to import node '" + node.name() +
+                      "': " + "(node:\n" + node.DebugString() + "\n)");
+    }
   }
 
   return FinalizeGraph();
