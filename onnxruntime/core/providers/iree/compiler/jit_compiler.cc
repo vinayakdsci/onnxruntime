@@ -159,7 +159,7 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
   }
 
   ONNX_NAMESPACE::GraphProto graph_proto;
-  GraphViewerToProto(graph_view, graph_proto, true, true);
+  GraphViewerToProto(graph_view, graph_proto, false, false);
   // LOGS(session.logger, INFO) << "  full graph: " << graph_proto.DebugString();
 
   // Set up for subgraph import.
