@@ -228,23 +228,6 @@ Status GraphInfo::Initialize() {
 }
 
 const onnx::TypeProto *GraphInfo::FindTypeProtoForName(std::string_view name) {
-  // Node outputs don't typically have type information, but shape inference
-  // will associate them in the value_info. If not there, it may be a
-  // graph output, which must have type information.
-#if 0
-  {
-    auto it = value_info_map_.find(name);
-    if (it != value_info_map_.end()) {
-      return &it->second.type();
-    }
-  }
-  {
-    auto it = output_map_.find(name);
-    if (it != output_map_.end()) {
-      return &it->second.type();
-    }
-  }
-#endif
   return graph_viewer_.GetNodeArg(std::string{name})->TypeAsProto();
 }
 

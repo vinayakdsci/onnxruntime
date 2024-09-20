@@ -22,6 +22,7 @@
 #include "onnx/onnx_pb.h"
 
 #include <optional>
+#include <memory>
 #include <string_view>
 #include <unordered_map>
 
