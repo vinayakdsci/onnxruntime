@@ -21,8 +21,8 @@
 #include "mlir-c/IR.h"
 #include "onnx/onnx_pb.h"
 
-#include <optional>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 
@@ -66,7 +66,8 @@ static inline bool failed(Status status) { return !status.is_success(); }
 // Accounting for a GraphProto.
 class GraphInfo {
 public:
-  GraphInfo(const onnxruntime::GraphViewer &gv, ModelInfo &model_info, const onnx::GraphProto &graph_proto)
+  GraphInfo(const onnxruntime::GraphViewer &gv, ModelInfo &model_info,
+            const onnx::GraphProto &graph_proto)
       : graph_viewer_(gv), model_info_(model_info), graph_proto_(graph_proto) {}
   ModelInfo &model_info() { return model_info_; }
   const onnx::GraphProto &graph_proto() { return graph_proto_; }

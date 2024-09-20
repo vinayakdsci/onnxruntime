@@ -194,8 +194,9 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
   }
 
   if (torch_mlir_onnx::failed(imp.ImportAll())) {
-    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, "Failed to import nodes", ": ",
-        model_info.error_message(), ConsumeDiagnostics());
+    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, "Failed to import nodes",
+                           ": ", model_info.error_message(),
+                           ConsumeDiagnostics());
   }
 
   // Verify the function at the point of import because we have better diagnostics.
