@@ -1141,7 +1141,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kIreeExecutionProvider) {
 #if USE_IREE
-    const auto &it = provider_options_map.find(type);
+    const auto& it = provider_options_map.find(type);
     ProviderOptions iree_option_map = ProviderOptions{};
     if (it != provider_options_map.end()) {
       iree_option_map = it->second;

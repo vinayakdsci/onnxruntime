@@ -5,6 +5,7 @@
 // (which require a pre-compilation step).
 
 #include "core/providers/iree/compiler/jit_compiler.h"
+#include "core/graph/graph_proto_serializer.h"
 #include "core/providers/iree/compiler/torch-mlir-import-onnx/OnnxImporter.h"
 #include "mlir-c/BuiltinAttributes.h"
 
@@ -157,13 +158,12 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
     opset_import->set_version(it.second);
   }
 
-  // Unforgivably sharp edge: There is a ToGraphProto() that returns a value and another that returns a reference.
-  // And they differ by const-ness. We need to make sure we get the reference, obviously, so we assign it explicitly.
-  const ONNX_NAMESPACE::GraphProto& graph_proto = graph_view.GetGraph().ToGraphProto();
+  ONNX_NAMESPACE::GraphProto graph_proto;
+  GraphViewerToProto(graph_view, graph_proto, false, false);
   // LOGS(session.logger, INFO) << "  full graph: " << graph_proto.DebugString();
 
   // Set up for subgraph import.
-  torch_mlir_onnx::GraphInfo subgraph_info(model_info, graph_proto);
+  torch_mlir_onnx::GraphInfo subgraph_info(graph_view, model_info, graph_proto);
   if (torch_mlir_onnx::failed(subgraph_info.Initialize())) {
     return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, model_info.error_message());
   }
@@ -193,24 +193,10 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
                            model_info.error_message(), ConsumeDiagnostics());
   }
 
-  // Import each node. Note that the importer uses references internally and expects nodes to be located at fixed
-  // memory locations for the life of iteration. So we materialize them into a fixed vector first. This is because
-  // the onnxruntime does not keep the serialized proto form sync'd on its own.
-  auto node_indices = graph_view.GetNodesInTopologicalOrder();
-  std::vector<ONNX_NAMESPACE::NodeProto> nodes(node_indices.size());
-  for (size_t i = 0; i < node_indices.size(); ++i) {
-    graph_view.GetNode(node_indices[i])->ToProto(nodes[i]);
-  }
-  for (const auto& node : nodes) {
-    if (torch_mlir_onnx::failed(imp.ImportNode(node))) {
-      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, "Failed to import node '", node.name(), "': ",
-                             model_info.error_message(), " (node:\n", node.DebugString(), "\n)", ConsumeDiagnostics());
-    }
-  }
-
-  // Finalize.
-  if (torch_mlir_onnx::failed(imp.FinalizeGraph())) {
-    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, model_info.error_message(), ConsumeDiagnostics());
+  if (torch_mlir_onnx::failed(imp.ImportAll())) {
+    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_GRAPH, "Failed to import nodes",
+                           ": ", model_info.error_message(),
+                           ConsumeDiagnostics());
   }
 
   // Verify the function at the point of import because we have better diagnostics.

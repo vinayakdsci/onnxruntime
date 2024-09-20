@@ -76,10 +76,6 @@ std::vector<std::unique_ptr<ComputeCapability>> IREEExecutionProvider::GetCapabi
     inputs.push_back(nodeArgPtr->Name());
   }
 
-  for (auto& name : required_initializers) {
-    inputs.push_back(name);
-  }
-
   for (auto& nodeArgPtr : graph_viewer.GetOutputs()) {
     outputs.push_back(nodeArgPtr->Name());
   }

@@ -154,11 +154,11 @@ void ModelInfo::DebugDumpProto() {
   fprintf(stderr, "%s\n", debug_string.c_str());
 }
 
-Status ModelInfo::Initialize() {
+Status ModelInfo::Initialize(const onnxruntime::GraphViewer &gv) {
   if (!model_proto_.has_graph()) {
     return SetError("ONNX ModelProto has no main graph");
   }
-  main_graph_ = std::make_unique<GraphInfo>(*this, model_proto_.graph());
+  main_graph_ = std::make_unique<GraphInfo>(gv, *this, model_proto_.graph());
   if (failed(main_graph_->Initialize())) {
     return failure();
   }
@@ -228,32 +228,24 @@ Status GraphInfo::Initialize() {
 }
 
 const onnx::TypeProto *GraphInfo::FindTypeProtoForName(std::string_view name) {
-  // Node outputs don't typically have type information, but shape inference
-  // will associate them in the value_info. If not there, it may be a
-  // graph output, which must have type information.
-  {
-    auto it = value_info_map_.find(name);
-    if (it != value_info_map_.end()) {
-      return &it->second.type();
-    }
-  }
-  {
-    auto it = output_map_.find(name);
-    if (it != output_map_.end()) {
-      return &it->second.type();
-    }
-  }
-
-  std::string msg = "No type information associated with '";
-  msg.append(name);
-  msg.append("'. Run shape inference?");
-  model_info_.SetError(std::move(msg));
-  return nullptr;
+  return graph_viewer_.GetNodeArg(std::string{name})->TypeAsProto();
 }
 
 // ---------------------------------------------------------------------------//
 // ContextCache
 // ---------------------------------------------------------------------------//
+
+// Parsing !torch.none to an MlirType (this is used as the result type for the
+// GetNoneNode op).
+MlirType ContextCache::GetNoneType() {
+  auto t =
+      mlirTypeParseGet(context_, mlirStringRefCreateFromCString("!torch.none"));
+  if (mlirTypeIsNull(t)) {
+    std::string message = "internal error: could not parse !torch.none type: ";
+    model_info_.SetError(std::move(message));
+  }
+  return t;
+}
 
 MlirType ContextCache::ConvertTypeProto(const onnx::TypeProto &tp) {
   if (tp.has_tensor_type()) {
@@ -392,8 +384,8 @@ ContextCache::ConvertTensorProtoToAttr(const onnx::TensorProto &tp) {
       int8_conversion.reserve(tp.int32_data_size());
       for (int32_t v : tp.int32_data())
         int8_conversion.push_back(v);
-      return mlirDenseElementsAttrInt8Get(
-          tensor_type, int8_conversion.size(), int8_conversion.data());
+      return mlirDenseElementsAttrInt8Get(tensor_type, int8_conversion.size(),
+                                          int8_conversion.data());
     }
     case onnx::TensorProto::DataType::TensorProto_DataType_INT32:
       return mlirDenseElementsAttrInt32Get(tensor_type, tp.int32_data_size(),
@@ -511,6 +503,19 @@ NodeImporter::NodeImporter(GraphInfo &graph_info, ContextCache &cc,
                                      /*childLoc=*/{nullptr});
 }
 
+// For importing the !torch.none in place of
+// '' -> that is the empty label.
+void NodeImporter::ImportNoneNode() {
+  auto it = nv_map_.find("");
+  if (it != nv_map_.end())
+    return;
+
+  MlirOperation new_op = createMlirOperationAtEnd(
+      body_block_, "torch.constant.none", default_loc_, cc_.GetNoneType());
+  MlirValue nne = mlirOperationGetResult(new_op, 0);
+  nv_map_.emplace("", nne);
+}
+
 Status NodeImporter::DefineFunction(std::optional<std::string> name,
                                     MlirOperation *out_function_op) {
   const onnx::GraphProto &p = graph_info_.graph_proto();
@@ -529,16 +534,16 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   std::vector<MlirType> input_types;
   std::vector<MlirLocation> input_locs;
   std::vector<MlirType> output_types;
-  for (auto *input : graph_info_.inputs()) {
-    MlirType t = cc_.ConvertTypeProto(input->type());
+  for (auto *input : graph_info_.graph_viewer().GetInputs()) {
+    MlirType t = cc_.ConvertTypeProto(*input->TypeAsProto());
     if (mlirTypeIsNull(t)) {
       return failure();
     }
     input_types.push_back(t);
     input_locs.push_back(default_loc_);
   }
-  for (auto *output : graph_info_.outputs()) {
-    MlirType t = cc_.ConvertTypeProto(output->type());
+  for (auto output : graph_info_.graph_proto().output()) {
+    MlirType t = cc_.ConvertTypeProto(output.type());
     if (mlirTypeIsNull(t)) {
       return failure();
     }
@@ -561,8 +566,9 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   mlirRegionAppendOwnedBlock(bodyRegion, body_block_);
 
   // Map the block args to names and store for evaluation.
-  for (int i = 0, e = graph_info_.inputs().size(); i < e; ++i) {
-    std::string_view name = graph_info_.inputs()[i]->name();
+  for (int i = 0, e = graph_info_.graph_viewer().GetInputs().size(); i < e;
+       ++i) {
+    std::string_view name = graph_info_.graph_viewer().GetInputs()[i]->Name();
     MlirValue value = mlirBlockGetArgument(body_block_, i);
     nv_map_[name] = value;
   }
@@ -622,15 +628,19 @@ void NodeImporter::PopulateGraphAttrs(MlirOperation container_op) {
 }
 
 Status NodeImporter::ImportAll() {
-  // TODO: Consider pulling in initializers on demand since there can be so
-  // much unused crap.
-  for (auto it : graph_info_.initializer_map()) {
-    if (failed(ImportInitializer(it.second)))
-      return failure();
+  ImportNoneNode();
+
+  auto node_indices = graph_info_.graph_viewer().GetNodesInTopologicalOrder();
+  std::vector<ONNX_NAMESPACE::NodeProto> nodes(node_indices.size());
+  for (size_t i = 0; i < node_indices.size(); ++i) {
+    graph_info_.graph_viewer().GetNode(node_indices[i])->ToProto(nodes[i]);
   }
-  for (auto it : graph_info_.graph_proto().node()) {
-    if (failed(ImportNode(it)))
-      return failure();
+
+  for (const auto &node : nodes) {
+    if (torch_mlir_onnx::failed(ImportNode(node))) {
+      return SetError("Failed to import node '" + node.name() +
+                      "': " + "(node:\n" + node.DebugString() + "\n)");
+    }
   }
 
   return FinalizeGraph();
@@ -640,8 +650,8 @@ Status NodeImporter::FinalizeGraph() {
   // Lookup the outputs, which should all be in the nv_map if the graph was
   // properly formed.
   std::vector<MlirValue> output_values;
-  for (const auto *output : graph_info_.outputs()) {
-    std::string_view name = output->name();
+  for (const auto &output : graph_info_.graph_proto().output()) {
+    std::string_view name = output.name();
     auto found_it = nv_map_.find(name);
     if (found_it == nv_map_.end()) {
       std::string msg = "Non topologically produced ONNX graph output '";
@@ -670,8 +680,11 @@ Status NodeImporter::ImportInitializer(const onnx::TensorProto &initializer) {
     return failure();
 
   MlirOperation op = createMlirOperationAtEnd(
-      body_block_, "torch.vtensor.literal", loc, vtensor_type,
-      toMlirNamedAttribute("value", value_attr));
+      body_block_, "torch.operator", loc, vtensor_type,
+      toMlirNamedAttribute(
+          "name",
+          mlirStringAttrGet(context_, toMlirStringRef("onnx.Constant"))),
+      toMlirNamedAttribute("torch.onnx.value", value_attr));
   MlirValue result = mlirOperationGetResult(op, 0);
 
   auto inserted = nv_map_.insert(std::make_pair(name, result));
@@ -706,6 +719,11 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
   // Map inputs to values.
   std::vector<MlirValue> input_values;
   for (auto &input_name : node.input()) {
+    if (auto inp = graph_info_.graph_viewer().GetConstantInitializer(input_name,
+                                                                     false)) {
+      ImportInitializer(*inp);
+    }
+
     auto found_it = nv_map_.find(input_name);
     if (found_it == nv_map_.end()) {
       std::string msg = "Non topologically produced ONNX node input '";
@@ -720,7 +738,7 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
   std::vector<MlirType> output_types;
   for (auto &output_name : node.output()) {
     const onnx::TypeProto *type_proto =
-        graph_info_.FindTypeProtoForName(output_name);
+        graph_info_.graph_viewer().GetNodeArg(output_name)->TypeAsProto();
     if (!type_proto)
       return failure();
 
@@ -955,15 +973,8 @@ Status NodeImporter::ImportConstantOfShapeNode(const onnx::NodeProto &node) {
 
 Status NodeImporter::GetImmediateShapeTensor(const std::string &name,
                                              std::vector<int64_t> &shape) {
-  auto found_it = graph_info_.initializer_map().find(name);
-  if (found_it == graph_info_.initializer_map().end()) {
-    std::string message = "An immediate shape value for '";
-    message.append(name);
-    message.append("' was required but it is dynamically produced");
-    return SetError(std::move(message));
-  }
-
-  const onnx::TensorProto &tp = found_it->second;
+  const onnx::TensorProto &tp =
+      *graph_info_.graph_viewer().GetConstantInitializer(name, false);
   shape.clear();
 
   // Since this is being interpreted as a shape, we only support some limited
@@ -1028,7 +1039,7 @@ void NodeImporter::DebugDumpModule() {
     fwrite(sr.data, sizeof(char), sr.length, stderr);
   };
   MlirOpPrintingFlags flags = mlirOpPrintingFlagsCreate();
-  mlirOpPrintingFlagsEnableDebugInfo(flags, true, false);
+  mlirOpPrintingFlagsEnableDebugInfo(flags, false, true);
   mlirOperationPrintWithFlags(module_op_, flags, callback, nullptr);
   mlirOpPrintingFlagsDestroy(flags);
 }
