@@ -1015,8 +1015,11 @@ Status NodeImporter::GetImmediateShapeTensor(const std::string &name,
   const onnx::TensorProto *tensor =
       graph_info_.graph_viewer().GetConstantInitializer(name, false);
   if (!tensor) {
-    return SetError(
-        "Could not find immediate shape tensor in graph initializers");
+    std::string msg = "Could not find the immediate shape tensor ";
+    msg.append(name);
+    msg.append(" in constant graph initializers. It was possibly produced "
+               "dynamically.");
+    return SetError(msg);
   }
   const onnx::TensorProto &tp = *tensor;
 
