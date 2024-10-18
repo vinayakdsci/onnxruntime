@@ -158,7 +158,7 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
   }
 
   ONNX_NAMESPACE::GraphProto graph_proto;
-  GraphViewerToProto(graph_view, graph_proto, false, false);
+  GraphViewerToProto(graph_view, graph_proto, true, false);
   // LOGS(session.logger, INFO) << "  full graph: " << graph_proto.DebugString();
 
   // Set up for subgraph import.
@@ -204,6 +204,7 @@ common::Status CompilerInvocation::ImportSubgraph(const onnxruntime::GraphViewer
                            "\nUnverified MLIR module:\n", MlirOperationToString(func_op, /*generic=*/true));
   }
 
+  imp.DebugDumpModule();
   return common::Status::OK();
 }
 

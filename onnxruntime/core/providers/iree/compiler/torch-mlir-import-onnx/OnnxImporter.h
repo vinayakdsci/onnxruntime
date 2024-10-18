@@ -67,8 +67,8 @@ static inline bool failed(Status status) { return !status.is_success(); }
 class GraphInfo {
 public:
   GraphInfo(const onnxruntime::GraphViewer &gv, ModelInfo &model_info,
-            const onnx::GraphProto &graph_proto)
-      : graph_viewer_(gv), model_info_(model_info), graph_proto_(graph_proto) {}
+            const onnx::GraphProto &graph_proto, bool isSubgraph = false)
+      : graph_viewer_(gv), model_info_(model_info), graph_proto_(graph_proto), is_subgraph_(isSubgraph) {}
   ModelInfo &model_info() { return model_info_; }
   const onnx::GraphProto &graph_proto() { return graph_proto_; }
 
@@ -105,6 +105,7 @@ public:
   }
 
   const onnxruntime::GraphViewer &graph_viewer() { return graph_viewer_; }
+  bool is_subgraph() { return is_subgraph_; }
 
   std::unordered_map<std::string_view, const onnx::TensorProto &> &
   initializer_map() {
@@ -127,6 +128,8 @@ private:
   std::unordered_map<std::string_view, const onnx::ValueInfoProto &> input_map_;
   std::unordered_map<std::string_view, const onnx::ValueInfoProto &>
       output_map_;
+
+  bool is_subgraph_;
 };
 
 /// Top-level accounting and accessors for an ONNX model.
@@ -238,6 +241,9 @@ private:
   Status GetImmediateShapeTensor(const std::string &name,
                                  std::vector<int64_t> &shape);
 
+  Status ImportRegions(const onnx::AttributeProto *const *attrs, int data_size,
+                       MlirOperation *op);
+
   Status SetError(std::string msg) {
     return graph_info_.model_info().SetError(std::move(msg));
   }
@@ -250,6 +256,7 @@ private:
   MlirBlock body_block_;
   MlirLocation default_loc_;
   std::unordered_map<std::string_view, MlirValue> nv_map_;
+  bool is_func_;
 };
 
 } // namespace torch_mlir_onnx

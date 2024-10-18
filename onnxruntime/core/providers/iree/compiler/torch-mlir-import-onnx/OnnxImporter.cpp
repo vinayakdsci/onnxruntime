@@ -12,6 +12,7 @@
 #include "mlir-c/BuiltinAttributes.h"
 #include "mlir-c/BuiltinTypes.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <functional>
 
@@ -30,6 +31,21 @@ std::string SanitizeNameAsIdentifier(std::string_view in) {
       c = '_';
   }
   return out;
+}
+
+template <typename T>
+std::vector<std::string_view>
+SortedMapKeys(std::unordered_map<std::string_view, T> &kmap) {
+  std::vector<std::string_view> keys;
+  keys.reserve(kmap.size());
+  for (const auto &[k, v] : kmap) {
+    keys.push_back(k);
+  }
+
+  std::sort(keys.begin(), keys.end(),
+            [](const auto &key1, const auto &key2) { return key1 < key2; });
+
+  return keys;
 }
 
 template <typename T>
@@ -95,6 +111,15 @@ void addToMlirOperationState(MlirOperationState &state, MlirRegion region) {
   mlirOperationStateAddOwnedRegions(&state, 1, &region);
 }
 
+void addToMlirOperationState(MlirOperationState &state, int numRegions) {
+  std::vector<MlirRegion> regions;
+  for (int i = 0; i < numRegions; ++i) {
+    MlirRegion region = mlirRegionCreate();
+    regions.push_back(region);
+  }
+  mlirOperationStateAddOwnedRegions(&state, numRegions, regions.data());
+}
+
 [[maybe_unused]] void addToMlirOperationState(MlirOperationState &state,
                                               MlirValue value) {
   mlirOperationStateAddOperands(&state, 1, &value);
@@ -116,11 +141,25 @@ void addToMlirOperationState(MlirOperationState &state,
 
 [[maybe_unused]] void addToMlirOperationState(MlirOperationState &state) {}
 
+template <int, typename... Ts>
+void addToMlirOperationState(MlirOperationState &state, int &s, Ts &&...ts) {
+  addToMlirOperationState(state, s);
+  addToMlirOperationState(state, std::forward<Ts>(ts)...);
+}
+
 template <typename T, typename U, typename... Ts>
 void addToMlirOperationState(MlirOperationState &state, T &&t, U &&u,
                              Ts &&...ts) {
   addToMlirOperationState(state, std::forward<T>(t));
   addToMlirOperationState(state, std::forward<U>(u), std::forward<Ts>(ts)...);
+}
+
+template <typename... Ts>
+MlirOperation createMlirOperation(std::string name, MlirLocation loc, int &s,
+                                  Ts &&...ts) {
+  MlirOperationState state = mlirOperationStateGet(toMlirStringRef(name), loc);
+  addToMlirOperationState(state, s, std::forward<Ts>(ts)...);
+  return mlirOperationCreate(&state);
 }
 
 template <typename... Ts>
@@ -136,6 +175,17 @@ MlirOperation createMlirOperationAtEnd(MlirBlock block, std::string name,
                                        MlirLocation loc, Ts &&...ts) {
   MlirOperation operation =
       createMlirOperation(name, loc, std::forward<Ts>(ts)...);
+  mlirBlockInsertOwnedOperationBefore(block, mlirBlockGetTerminator(block),
+                                      operation);
+  return operation;
+}
+
+template <typename... Ts>
+MlirOperation createMlirOperationAtEnd(MlirBlock block, std::string name,
+                                       MlirLocation loc, int num_regions,
+                                       Ts &&...ts) {
+  MlirOperation operation =
+      createMlirOperation(name, loc, num_regions, std::forward<Ts>(ts)...);
   mlirBlockInsertOwnedOperationBefore(block, mlirBlockGetTerminator(block),
                                       operation);
   return operation;
@@ -187,7 +237,7 @@ Status GraphInfo::Initialize() {
 
   // Generate the effective input map, which for old models can be a subset of
   // the input map.
-  if (model_info_.config().elide_initialized_inputs) {
+  if (model_info_.config().elide_initialized_inputs && !is_subgraph_) {
     // Default. Add declared inputs to the input map unless if they appear
     // as an initializer.
     for (const onnx::ValueInfoProto *it : declared_inputs_) {
@@ -228,7 +278,42 @@ Status GraphInfo::Initialize() {
 }
 
 const onnx::TypeProto *GraphInfo::FindTypeProtoForName(std::string_view name) {
-  return graph_viewer_.GetNodeArg(std::string{name})->TypeAsProto();
+  if (!is_subgraph_)
+    return graph_viewer_.GetNodeArg(std::string{name})->TypeAsProto();
+
+  {
+    auto found_it = input_map_.find(name);
+    if (found_it != input_map_.end()) {
+      return &found_it->second.type();
+    }
+  }
+
+  {
+    auto found_it = value_info_map_.find(name);
+    if (found_it != value_info_map_.end()) {
+      return &found_it->second.type();
+    }
+  }
+
+  {
+    auto found_it = output_map_.find(name);
+    if (found_it != output_map_.end()) {
+      return &found_it->second.type();
+    }
+  }
+
+  // {
+  //   auto found_it = initializer_map_.find(name);
+  //   if (found_it != initializer_map_.end()) {
+  //     return &found_it->second.data_type();
+  //   }
+  // }
+
+  std::string err_msg = "No type info found for node ";
+  err_msg.append(name);
+  err_msg.append(". Run shape inference?");
+  model_info_.SetError(err_msg);
+  return nullptr;
 }
 
 // ---------------------------------------------------------------------------//
@@ -496,7 +581,7 @@ NodeImporter::NodeImporter(GraphInfo &graph_info, ContextCache &cc,
                            MlirOperation module_op)
     : graph_info_(graph_info), cc_(cc),
       context_(mlirOperationGetContext(module_op)), module_op_(module_op),
-      func_op_({nullptr}), body_block_({nullptr}) {
+      func_op_({nullptr}), body_block_({nullptr}), is_func_(true) {
   std::string locName = "graph:";
   locName.append(graph_info.graph_proto().name());
   default_loc_ = mlirLocationNameGet(context_, toMlirStringRef(locName),
@@ -534,8 +619,8 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   std::vector<MlirType> input_types;
   std::vector<MlirLocation> input_locs;
   std::vector<MlirType> output_types;
-  for (auto *input : graph_info_.graph_viewer().GetInputs()) {
-    MlirType t = cc_.ConvertTypeProto(*input->TypeAsProto());
+  for (auto input : graph_info_.graph_proto().input()) {
+    MlirType t = cc_.ConvertTypeProto(input.type());
     if (mlirTypeIsNull(t)) {
       return failure();
     }
@@ -566,9 +651,8 @@ Status NodeImporter::DefineFunction(std::optional<std::string> name,
   mlirRegionAppendOwnedBlock(bodyRegion, body_block_);
 
   // Map the block args to names and store for evaluation.
-  for (int i = 0, e = graph_info_.graph_viewer().GetInputs().size(); i < e;
-       ++i) {
-    std::string_view name = graph_info_.graph_viewer().GetInputs()[i]->Name();
+  for (int i = 0, e = graph_info_.graph_proto().input_size(); i < e; ++i) {
+    std::string_view name = graph_info_.graph_proto().input()[i].name();
     MlirValue value = mlirBlockGetArgument(body_block_, i);
     nv_map_[name] = value;
   }
@@ -630,40 +714,63 @@ void NodeImporter::PopulateGraphAttrs(MlirOperation container_op) {
 Status NodeImporter::ImportAll() {
   ImportNoneNode();
 
-  auto node_indices = graph_info_.graph_viewer().GetNodesInTopologicalOrder();
-  std::vector<ONNX_NAMESPACE::NodeProto> nodes(node_indices.size());
-  for (size_t i = 0; i < node_indices.size(); ++i) {
-    graph_info_.graph_viewer().GetNode(node_indices[i])->ToProto(nodes[i]);
-  }
-
-  for (const auto &node : nodes) {
-    if (torch_mlir_onnx::failed(ImportNode(node))) {
-      return SetError("Failed to import node '" + node.name() +
-                      "': " + "(node:\n" + node.DebugString() + "\n)");
+  for (const auto &initializer : graph_info_.graph_proto().initializer()) {
+    if (failed(ImportInitializer(initializer))) {
+      return failure();
     }
   }
 
+  if (graph_info_.is_subgraph()) {
+    for (const auto &node : graph_info_.graph_proto().node()) {
+      if (failed(ImportNode(node))) {
+        return failure();
+      }
+    }
+  } else {
+    auto node_indices = graph_info_.graph_viewer().GetNodesInTopologicalOrder();
+    std::vector<ONNX_NAMESPACE::NodeProto> nodes(node_indices.size());
+    for (size_t i = 0; i < node_indices.size(); ++i) {
+      graph_info_.graph_viewer().GetNode(node_indices[i])->ToProto(nodes[i]);
+    }
+
+    for (const auto &node : nodes) {
+      if (failed(ImportNode(node))) {
+        return failure();
+      }
+    }
+  }
   return FinalizeGraph();
 }
 
 Status NodeImporter::FinalizeGraph() {
   // Lookup the outputs, which should all be in the nv_map if the graph was
   // properly formed.
+  std::vector<MlirType> output_types;
   std::vector<MlirValue> output_values;
   for (const auto &output : graph_info_.graph_proto().output()) {
     std::string_view name = output.name();
     auto found_it = nv_map_.find(name);
     if (found_it == nv_map_.end()) {
+      // graph_info_.graph_proto().PrintDebugString();
       std::string msg = "Non topologically produced ONNX graph output '";
       msg.append(name);
       msg.append("'");
       return SetError(std::move(msg));
     }
     output_values.push_back(found_it->second);
+    if (is_func_) {
+      const auto type = cc_.ConvertTypeProto(output.type());
+      output_types.push_back(type);
+    }
   }
 
-  createMlirOperationAtEnd(body_block_, "func.return", default_loc_,
-                           output_values);
+  if (is_func_) {
+    createMlirOperationAtEnd(body_block_, "func.return", default_loc_,
+                             output_values);
+  } else {
+    createMlirOperationAtEnd(body_block_, "torch.operator_terminator",
+                             default_loc_, output_types);
+  }
   return success();
 }
 
@@ -719,11 +826,6 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
   // Map inputs to values.
   std::vector<MlirValue> input_values;
   for (auto &input_name : node.input()) {
-    if (auto inp = graph_info_.graph_viewer().GetConstantInitializer(input_name,
-                                                                     false)) {
-      ImportInitializer(*inp);
-    }
-
     auto found_it = nv_map_.find(input_name);
     if (found_it == nv_map_.end()) {
       std::string msg = "Non topologically produced ONNX node input '";
@@ -738,7 +840,7 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
   std::vector<MlirType> output_types;
   for (auto &output_name : node.output()) {
     const onnx::TypeProto *type_proto =
-        graph_info_.graph_viewer().GetNodeArg(output_name)->TypeAsProto();
+        graph_info_.FindTypeProtoForName(output_name);
     if (!type_proto)
       return failure();
 
@@ -756,7 +858,13 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
 
   // General attributes.
   std::vector<std::pair<std::string, MlirAttribute>> general_attributes;
+  int num_regions = 0;
   for (auto &onnx_attr : node.attribute()) {
+    if (onnx_attr.type() == onnx::AttributeProto::AttributeType::
+                                AttributeProto_AttributeType_GRAPH) {
+      num_regions++;
+      continue;
+    }
     MlirAttribute attr = ImportGeneralAttribute(onnx_attr);
     if (mlirAttributeIsNull(attr))
       return failure();
@@ -766,10 +874,22 @@ Status NodeImporter::ImportGeneralNode(const onnx::NodeProto &node) {
   }
 
   // Create op.
-  MlirOperation op = createMlirOperationAtEnd(
-      body_block_, "torch.operator", loc, output_types, input_values,
-      toMlirNamedAttribute("name", op_name_attr), general_attributes);
-
+  MlirOperation op;
+  if (num_regions >= 1) {
+    op = createMlirOperationAtEnd(body_block_, "torch.operator", loc,
+                                  num_regions, output_types, input_values,
+                                  toMlirNamedAttribute("name", op_name_attr),
+                                  general_attributes);
+    auto status =
+        ImportRegions(node.attribute().data(), node.attribute_size(), &op);
+    mlirOperationDump(op);
+    if (failed(status))
+      return failure();
+  } else {
+    op = createMlirOperationAtEnd(
+        body_block_, "torch.operator", loc, output_types, input_values,
+        toMlirNamedAttribute("name", op_name_attr), general_attributes);
+  }
   // Record the result values.
   for (int i = 0, e = output_types.size(); i < e; ++i) {
     MlirValue result = mlirOperationGetResult(op, i);
@@ -1032,6 +1152,85 @@ Status NodeImporter::GetImmediateShapeTensor(const std::string &name,
     message.append(tp.DebugString());
     return SetError(std::move(message));
   }
+}
+
+// TODO(vinayakdsci): Remove pointer to op.
+Status NodeImporter::ImportRegions(const onnx::AttributeProto *const *attrs,
+                                   int attrs_size, MlirOperation *op) {
+  ORT_ENFORCE(attrs);
+
+  std::unordered_map<std::string_view, onnx::AttributeProto *> attr_map;
+  for (int i = 0; i < attrs_size; ++i) {
+    const auto attr = attrs[i];
+    auto attr_type = attr->type();
+    if (attr_type !=
+        onnx::AttributeProto::AttributeType::AttributeProto_AttributeType_GRAPH)
+      continue;
+    auto t = attr_map.emplace(attr->name(),
+                              const_cast<onnx::AttributeProto *>(attr));
+    if (!t.second) {
+      return SetError("Failed to insert into attribute map");
+    }
+  }
+
+  if (attr_map.empty())
+    return success();
+
+  std::vector<std::string_view> attr_keys;
+  for (const auto &[k, v] : attr_map) {
+    attr_keys.push_back(k);
+  }
+
+  std::sort(attr_keys.begin(), attr_keys.end(),
+            [](const auto &key1, const auto &key2) { return key1 < key2; });
+
+  intptr_t keys_size = attr_keys.size();
+  const intptr_t iter_length =
+      std::min(keys_size, mlirOperationGetNumRegions(*op));
+
+  for (intptr_t i = 0; i < iter_length; ++i) {
+    const auto attr = attr_map[attr_keys[i]];
+    std::vector<MlirType> block_types;
+    std::vector<std::string> block_names;
+    std::vector<MlirLocation> locs;
+    for (const auto &input : attr->g().input()) {
+      block_types.push_back(cc_.ConvertTypeProto(input.type()));
+      block_names.push_back(input.name());
+      locs.push_back(mlirOperationGetLocation(*op));
+    }
+    for (const auto &op : attr->g().output()) {
+      std::cerr << i << " " << op.name() << "\n";
+    }
+    MlirRegion region = mlirOperationGetRegion(*op, i);
+    MlirBlock rblock =
+        mlirBlockCreate(block_types.size(), block_types.data(), locs.data());
+
+    mlirRegionAppendOwnedBlock(region, rblock);
+
+    MlirBlock block = mlirRegionGetFirstBlock(region);
+
+    GraphInfo new_gi = GraphInfo(graph_info_.graph_viewer(),
+                                 graph_info_.model_info(), attr->g(), true);
+    new_gi.Initialize();
+    NodeImporter new_importer = NodeImporter(new_gi, cc_, module_op_);
+    new_importer.func_op_ = *op;
+    new_importer.body_block_ = block;
+    new_importer.is_func_ = false;
+    for (intptr_t i = 0; i < static_cast<intptr_t>(block_names.size()); ++i) {
+      const auto block_arg = mlirBlockGetArgument(block, i);
+      const auto name = block_names[i];
+      new_importer.nv_map_[name] = block_arg;
+    }
+
+    for (const auto &[k, v] : nv_map_)
+      new_importer.nv_map_[k] = v;
+
+    auto status = new_importer.ImportAll();
+    new_importer.nv_map_.clear();
+    if (failed(status))
+      return failure();
+  }
+  return success();
 }
 
 void NodeImporter::DebugDumpModule() {
